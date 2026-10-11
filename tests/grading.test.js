@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {gradeOne,gradeExam,normalizeAnswer,publicQuestion} from '../src/lib/grading.js';
+const mc={type:'mc',question:'Pilih',answer:2,options:[{text:'A'},{text:'B'},{text:'C'},{text:'D'}]};
+test('mc: pilihan 0-based benar salah',()=>{assert.equal(gradeOne(mc,2).correct,true);assert.equal(gradeOne(mc,1).correct,false)});
+test('complex: urutan jawaban tidak penting, tidak menerima jawaban tambahan',()=>{const q={type:'complex',options:mc.options,answers:[0,2]};assert.equal(gradeOne(q,[2,0]).correct,true);assert.equal(gradeOne(q,[0,1,2]).correct,false)});
+test('cause_effect: kunci string enum',()=>{const q={type:'cause_effect',answer:'both_correct_connected'};assert.equal(gradeOne(q,'both_correct_connected').correct,true);assert.equal(gradeOne(q,'both_wrong').correct,false)});
+test('case_analysis: mengikuti aturan MC',()=>{assert.equal(gradeOne({...mc,type:'case_analysis'},2).correct,true)});
+test('scaled: bobot terhadap maksimum',()=>{const q={type:'scaled',options:[1,2,3,4,5].map(v=>({score:v}))};assert.deepEqual(gradeOne(q,4),{correct:true,earned:5,max:5});assert.equal(gradeOne(q,0).correct,false)});
+test('campuran scaled+MC menghitung semua tipe, tidak mengulang bug historis',()=>{const q={type:'scaled',options:[{score:1},{score:5}]};assert.equal(gradeExam([mc,q],{0:2,1:0}).score,60)});
+test('opsi shuffled dikonversi kembali ke index original',()=>{const order=[2,0,3,1];assert.equal(normalizeAnswer(mc,0,order),2);assert.deepEqual(normalizeAnswer({...mc,type:'complex'},[0,1],order),[2,0]);assert.equal(publicQuestion(mc,0,order).options[0].text,'C')});
+test('soal kosong mendapatkan nilai 0',()=>{assert.equal(gradeExam([mc],{}).score,0)});
