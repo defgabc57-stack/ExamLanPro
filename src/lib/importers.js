@@ -1,5 +1,4 @@
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
+import {parseBinaryImport} from './import-parser.js';
 import Papa from 'papaparse';
 import {assert,str} from './util.js';
 import {CAUSE_CODES} from './grading.js';
@@ -19,11 +18,9 @@ export function questionRow(row){const type=str(row.tipe||'mc').toLowerCase();co
 export function validateRows(rows,kind){const errors=[];const valid=[];const seen=new Set();for(let i=0;i<rows.length;i++){try{const row=rows[i];if(kind==='students'){
   const nis=str(row.INDUK??row.NIS??row.nis);const name=str(row.NAMA??row.nama);const className=str(row.KELAS??row.kelas);assert(name&&className,'Nama dan kelas wajib diisi');assert(nis.length<=30&&name.length<=255&&className.length<=80,'Nilai terlalu panjang');if(nis){assert(!seen.has(nis),'NIS berulang dalam file');seen.add(nis)}valid.push({nis,name,className});
  }else{const q=questionRow(row);validateQuestion(q,i);valid.push(q)}}catch(e){errors.push({row:i+2,error:e.message})}}return {valid,errors,count:rows.length,ok:errors.length===0};}
-export async function readImportFile(file,kind){assert(file&&file.size,'Silakan pilih file');assert(file.size<=5*1024*1024,'Ukuran maksimal 5 MB');const name=str(file.name).toLowerCase();const ext=name.split('.').pop();assert(['xlsx','xls','csv','txt','docx'].includes(ext),'Format file tidak didukung');assert(!(kind==='students'&&['txt','docx'].includes(ext)),'File siswa harus Excel atau CSV');const bytes=Buffer.from(await file.arrayBuffer());let rows=[];
- if(ext==='xlsx'||ext==='xls'){
-  assert(ext==='xls'||(bytes[0]===0x50&&bytes[1]===0x4b),'Berkas XLSX tidak valid');
-  const wb=XLSX.read(bytes,{type:'buffer',cellText:false,cellDates:false,raw:true,sheetRows:2002});const ws=wb.Sheets[wb.SheetNames[0]];rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false});
- }else if(ext==='docx'){assert(bytes[0]===0x50&&bytes[1]===0x4b,'Berkas DOCX tidak valid');const result=await mammoth.extractRawText({buffer:bytes});rows=parseWordText(result.value)}
+export async function readImportFile(file,kind){assert(file&&file.size,'Silakan pilih file');assert(file.size<=5*1024*1024,'Ukuran maksimal 5 MB');const name=str(file.name).toLowerCase();const ext=name.split('.').pop();assert(['xlsx','csv','txt','docx'].includes(ext),ext==='xls'?'Format XLS lama tidak didukung. Simpan ulang sebagai XLSX atau CSV.':'Format file tidak didukung');assert(!(kind==='students'&&['txt','docx'].includes(ext)),'File siswa harus Excel atau CSV');const bytes=Buffer.from(await file.arrayBuffer());let rows=[];
+ if(ext==='xlsx')rows=await parseBinaryImport(bytes,ext);
+ else if(ext==='docx')rows=parseWordText(await parseBinaryImport(bytes,ext));
  else if(ext==='txt'){rows=parseWordText(bytes.toString('utf8'))}
  else {const parsed=Papa.parse(bytes.toString('utf8').replace(/^\uFEFF/,''),{header:true,skipEmptyLines:true,delimiter:''});assert(!parsed.errors.length,'CSV tidak valid: '+parsed.errors[0]?.message);rows=parsed.data;}
  assert(rows.length&&rows.length<=2000,'Data harus berisi 1 hingga 2000 baris');return validateRows(rows,kind);

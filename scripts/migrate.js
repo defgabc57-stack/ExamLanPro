@@ -3,6 +3,7 @@ config({path:'.env.local'});config();
 import mysql from 'mysql2/promise';
 import {readdir,readFile} from 'node:fs/promises';
 import {repairFromCanonicalFile} from './full-schema-repair.js';
+import {upgradeSecuritySchema} from './security-schema.js';
 
 const database=process.env.DB_NAME||'examlan';
 if(!/^[A-Za-z][A-Za-z0-9_]*$/.test(database))throw new Error('DB_NAME tidak sah.');
@@ -10,7 +11,7 @@ let connection;
 try {
   connection=await mysql.createConnection({
     host:process.env.DB_HOST||'127.0.0.1',
-    port:Number(process.env.DB_PORT||3307),
+    port:Number(process.env.DB_PORT||3306),
     user:process.env.DB_USER||'root',
     password:process.env.DB_PASSWORD||'',
     multipleStatements:false,
@@ -20,6 +21,7 @@ try {
   await connection.query('CREATE TABLE IF NOT EXISTS schema_migrations (name VARCHAR(255) PRIMARY KEY,applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)) ENGINE=InnoDB');
   // Jangan hanya percaya schema_migrations: cocokkan langsung dengan struktur nyata.
   const result=await repairFromCanonicalFile(connection,database);
+  await upgradeSecuritySchema(connection,database);
   for (const name of ['001_init.sql','002_question_answer.sql']) {
     await connection.execute('INSERT IGNORE INTO schema_migrations(name) VALUES(?)',[name]);
   }

@@ -2,9 +2,10 @@ import {cookies} from 'next/headers';
 import bcrypt from 'bcryptjs';
 import {query,transaction,run} from './db.js';
 import {hash,token,uid,httpError,assert,str} from './util.js';
+import {consumeRateLimit,clearRateLimit} from './rate-limit.js';
 const COOKIE='examlan_teacher';
 const IDLE=30*60*1000;
-const attempts=new Map();
+
 export async function teacherSession({touch=true}={}){
  const value=(await cookies()).get(COOKIE)?.value;
  if(!value)return null;
@@ -15,13 +16,35 @@ export async function teacherSession({touch=true}={}){
  return {id:s.teacher_id,username:s.username,changePasswordRequired:!s.password_changed_at};
 }
 export async function requireTeacher(){const teacher=await teacherSession();if(!teacher)throw httpError('Sesi guru berakhir. Silakan masuk lagi.',401);return teacher;}
-export async function loginTeacher({username,password},request){
- username=str(username);const key=username+'|'+(request.headers.get('x-forwarded-for')||'LAN').slice(0,128);const s=attempts.get(key)||{count:0,until:0};if(s.until>Date.now())throw httpError('Terlalu banyak percobaan. Ulangi dalam 5 menit.',429);
- const teacher=(await query('SELECT * FROM teachers WHERE username=?',[username]))[0];
- const valid=teacher&&await bcrypt.compare(String(password||''),teacher.password_hash.replace(/^\$2y\$/,'$2b$'));
- if(!valid){s.count++;if(s.count>=5){s.count=0;s.until=Date.now()+300000;}attempts.set(key,s);throw httpError('Nama pengguna atau kata sandi tidak sesuai.',401)}
- attempts.delete(key);const raw=token();const id=uid();await query('INSERT INTO teacher_sessions (id,teacher_id,token_hash,last_activity_at,expires_at) VALUES (?,?,?,UTC_TIMESTAMP(3),DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 30 MINUTE))',[id,teacher.id,hash(raw)]);
- (await cookies()).set(COOKIE,raw,{httpOnly:true,sameSite:'lax',secure:process.env.APP_URL?.startsWith('https://')||false,path:'/',maxAge:1800});return {ok:true,username:teacher.username,changePasswordRequired:!teacher.password_changed_at};
+function setSessionCookie(c,raw){c.set(COOKIE,raw,{httpOnly:true,sameSite:'lax',secure:process.env.APP_URL?.startsWith('https://')||false,path:'/',maxAge:1800});}
+export async function loginTeacher({username,password}){
+ username=str(username);assert(username&&username.length<=80,'Username tidak sah');assert(typeof password==='string'&&password.length<=1024,'Kata sandi tidak sah');
+ const [identity]=await query('SELECT id FROM teachers WHERE username=?',[username]);
+ const bucket='teacher-login:'+(identity?'id:'+identity.id:'name:'+username.normalize('NFKC').toLowerCase());
+ await consumeRateLimit(bucket);
+ const raw=token();
+ const teacher=await transaction(async conn=>{
+  const [t]=await run(conn,'SELECT * FROM teachers WHERE username=? FOR UPDATE',[username]);
+  assert(t&&await bcrypt.compare(password,t.password_hash.replace(/^\$2y\$/,'$2b$')),'Nama pengguna atau kata sandi tidak sesuai.',401);
+  await run(conn,'INSERT INTO teacher_sessions (id,teacher_id,token_hash,last_activity_at,expires_at) VALUES (?,?,?,UTC_TIMESTAMP(3),DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 30 MINUTE))',[uid(),t.id,hash(raw)]);
+  return t;
+ });
+ await clearRateLimit(bucket);setSessionCookie(await cookies(),raw);
+ return {ok:true,username:teacher.username,changePasswordRequired:!teacher.password_changed_at};
 }
 export async function logoutTeacher(){const c=await cookies(),raw=c.get(COOKIE)?.value;if(raw)await query('DELETE FROM teacher_sessions WHERE token_hash=?',[hash(raw)]);c.delete(COOKIE);return {ok:true}}
-export async function changePassword({oldPassword,newPassword}){const teacher=await requireTeacher();assert(String(newPassword||'').length>=10,'Kata sandi baru minimal 10 karakter');const rows=await query('SELECT password_hash FROM teachers WHERE id=?',[teacher.id]);assert(await bcrypt.compare(String(oldPassword||''),rows[0].password_hash.replace(/^\$2y\$/,'$2b$')),'Kata sandi lama salah',403);const newHash=await bcrypt.hash(newPassword,12);await query('UPDATE teachers SET password_hash=?,password_changed_at=UTC_TIMESTAMP(3) WHERE id=?',[newHash,teacher.id]);return {ok:true}}
+export async function changePassword({oldPassword,newPassword}){
+ const teacher=await requireTeacher(),c=await cookies(),current=c.get(COOKIE)?.value;
+ assert(typeof newPassword==='string'&&newPassword.length>=10&&Buffer.byteLength(newPassword,'utf8')<=72,'Kata sandi baru minimal 10 karakter dan maksimal 72 byte');
+ const raw=token(),newHash=await bcrypt.hash(newPassword,12);
+ await transaction(async conn=>{
+  const [row]=await run(conn,'SELECT password_hash FROM teachers WHERE id=? FOR UPDATE',[teacher.id]);
+  const [active]=await run(conn,'SELECT id FROM teacher_sessions WHERE teacher_id=? AND token_hash=? AND expires_at>UTC_TIMESTAMP(3)',[teacher.id,hash(current)]);
+  assert(active,'Sesi guru berakhir. Silakan masuk lagi.',401);
+  assert(await bcrypt.compare(String(oldPassword||''),row.password_hash.replace(/^\$2y\$/,'$2b$')),'Kata sandi lama salah',403);
+  await run(conn,'UPDATE teachers SET password_hash=?,password_changed_at=UTC_TIMESTAMP(3) WHERE id=?',[newHash,teacher.id]);
+  await run(conn,'DELETE FROM teacher_sessions WHERE teacher_id=?',[teacher.id]);
+  await run(conn,'INSERT INTO teacher_sessions(id,teacher_id,token_hash,last_activity_at,expires_at) VALUES(?,?,?,UTC_TIMESTAMP(3),DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 30 MINUTE))',[uid(),teacher.id,hash(raw)]);
+ });
+ setSessionCookie(c,raw);return {ok:true};
+}

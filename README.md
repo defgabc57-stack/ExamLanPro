@@ -4,16 +4,16 @@ Implementasi awal *berfungsi secara desain dan kode* berdasarkan `Peta_Refactor_
 
 ## Modul yang diimplementasikan
 
-- Peserta: lookup NIS, pilih kuis aktif, PIN, cek izin retake, mulai sesi, acak soal dan pilihan, 5 tipe, timer, autosave 500 ms / 8 detik, restore token per perangkat, submit server-side, hasil, polling review / perpanjangan.
+- Peserta: kode akses pribadi dari guru, pilih kuis aktif sesuai kelas, PIN, cek izin retake, mulai sesi, acak soal dan pilihan, 5 tipe, timer, autosave 500 ms / 8 detik, restore token per perangkat, submit server-side, hasil, polling review / perpanjangan.
 - Guru: login bcrypt (hash PHP `$2y$` kompatibel), ganti password awal, idle timeout 30 menit, dashboard monitoring, editor kuis + soal + gambar, CRUD siswa + foto, validasi impor, rekap hasil CSV/XLSX, izin retake, review, persetujuan/penolakan extension, analitik, audit, soft-deletion ke trash, backup privat & reset hasil.
-- File: template XLSX siswa/soal & DOCX asli disertakan; ekspor soal DOCX dari aplikasi, impor XLSX/XLS/CSV/TXT/DOCX dengan validasi dan pratinjau (impor Word bukan fitur PHP lama).
+- File: template XLSX siswa/soal & DOCX asli disertakan; ekspor soal DOCX dari aplikasi, impor XLSX/CSV/TXT/DOCX dengan validasi dan pratinjau (impor Word bukan fitur PHP lama).
 - Storage: MySQL InnoDB dari 17 tabel asli + migrasi kunci jawaban, snapshot soal pada awal attempt, token di-hash SHA256 dan session guru HttpOnly.
 
 ## Persyaratan
 
 - Node.js **20.9+** (disarankan 22 LTS); Next.js 15, JavaScript `.js` tanpa `.ts`/`.tsx`.
 - MySQL 8.0+ (XAMPP MariaDB mungkin berbeda; lebih aman MySQL 8). Gunakan akun DB dengan permission `CREATE/ALTER` hanya saat migrasi; kurangi privilege untuk runtime.
-- Internet **hanya saat `npm install` awal**. Setelah paket terpasang dan dibangun, font/icon/CSS berjalan lokal tanpa CDN.
+- Internet **hanya saat `npm ci` awal**. Setelah paket terpasang dan dibangun, font/icon/CSS berjalan lokal tanpa CDN.
 
 ## Konfigurasi XAMPP port 3306 dan Next.js port 3001
 
@@ -51,7 +51,7 @@ Salin `.env.wsl-xampp.example` ke `.env.local`, ubah `DB_HOST=WINDOWS_HOST_IP` m
 ```bash
 cp .env.wsl-xampp.example .env.local
 nano .env.local
-npm install
+npm ci
 npm run db:check
 npm run db:init
 ADMIN_USERNAME=admin ADMIN_PASSWORD='GantiDenganPasswordKuat123!' npm run admin:create
@@ -71,7 +71,7 @@ unzip examlan-nextjs.zip -d ~/projects
 cd ~/projects/examlan-nextjs
 cp .env.example .env.local
 nano .env.local
-npm install
+npm ci
 npm run db:check
 npm run db:init
 ADMIN_USERNAME=admin ADMIN_PASSWORD='GantiDenganPasswordKuat123!' npm run admin:create
@@ -114,32 +114,26 @@ npm run start
 ## Panduan operasional singkat
 
 1. Masuk portal guru, ubah sandi pertama.
-2. `Data Siswa` — isi manual atau download template Excel, pratinjau, impor.
+2. `Data Siswa` — isi manual atau download template Excel, pratinjau, impor. Siswa yang dibuat manual mendapat kode akses sekali saat disimpan. Untuk siswa lama/hasil impor, klik `Buat Kode Akses`. Berikan kode hanya kepada siswa tersebut; `Ganti Kode Akses` membatalkan kode lama.
 3. `Paket & Soal` — buat kuis, tambah lima jenis soal atau impor file, aktifkan `ACTIVE`, simpan.
-4. Portal siswa — masukkan identitas, pilih paket, mulai ujian, submit ketika selesai.
+4. Portal siswa — masukkan kode akses pribadi, pilih paket, mulai ujian, submit ketika selesai. Identitas berasal dari daftar siswa; NIS boleh kosong.
 5. Guru — lihat hasil, buka review, beri izin retake / extension bila diperlukan, ekspor laporan.
 6. `Operasional` — backup terjadwal dari luar aplikasi, periksa log, jangan simpan backup di lokasi publik.
 
 ## Catatan paritas dan batas pengujian
 
 - Keputusan implementasi pada skor soal **campuran + scaled**: tiap butir bobot setara; perhitungan normalized per item. Ini memperbaiki bug rumus historis (bagian scaled mengabaikan soal non-scaled), **tidak otomatis mengubah nilai lama**.
-- Untuk siswa tanpa NIS, aplikasi memisahkan riwayat berdasarkan nama dan kelas pada attempt check agar tidak bertabrakan. Guru harus menyiapkan identifikasi peserta untuk pengaturan retake.
+- Riwayat percobaan dan izin retake memakai ID siswa stabil, termasuk siswa tanpa NIS. Mengganti nama, NIS, kelas, atau kode akses tidak memberi jatah ujian baru. Penghapusan hasil tidak menghapus riwayat percobaan; beri izin retake secara eksplisit jika siswa perlu mengulang.
 - Impor dalam satu transaksi; pratinjau tidak mengubah DB. File Excel dan Word di folder `templates/` adalah template contoh fiktif.
 - Source PHP dan `db_kuis.json` **belum diunggah** di paket pemetaan ini. Untuk migrasi semua 25 siswa/43 soal/hasil historis secara presisi, sumber JSON asli & golden test PHP diperlukan; migrasi data historis belum termasuk pada build ini.
-- Belum ada uji browser Playwright, beban 50–100 klien, maupun pengujian koneksi MySQL langsung dalam lingkungan pembuatan arsip. Jalankan UAT dan uji beban sebelum produksi.
+- Tes regresi dan integrasi MySQL/API tersedia; hasil pemeriksaan cloud dijelaskan di `FIXES_AUDIT.md`. Uji beban 50–100 klien dan UAT pada perangkat sekolah tetap perlu dilakukan.
 - Jangan expose `storage/private`, `.env.local` atau MySQL ke internet. Backup JSON belum dienkripsi; atur izin akses OS.
 - 34 action lama menjadi endpoint domain baru; adapter kompatibilitas `?action=...` dari PHP **belum diterapkan**, sehingga klien PHP lama tidak boleh diarahkan ke endpoint baru tanpa migrasi UI.
 - `pahlawan_office.tsx` tidak dibangun karena bersifat game terpisah, bukan alur ujian utama.
 
-## Troubleshooting: `xlsx` tidak memiliki default export
+## Format impor dan keamanan parser
 
-Jika proyek lama menampilkan pesan `Attempted import error: 'xlsx' does not contain a default export`, pastikan `src/app/api/[...slug]/route.js` dan `src/lib/importers.js` menggunakan:
-
-```javascript
-import * as XLSX from 'xlsx';
-```
-
-Paket versi perbaikan ini sudah menerapkannya pada kedua file. Setelah mengganti source, hentikan proses Next.js yang berjalan lalu jalankan ulang `npm run dev`. Bila masih ada error kompilasi lama, hapus folder cache `.next` (bukan `node_modules`) dan jalankan ulang `npm run dev`. Perbaikan impor ini tidak memerlukan perubahan port Next.js 3001 maupun MySQL XAMPP 3306.
+Excel menggunakan ExcelJS; paket `xlsx` lama dan Mammoth sudah dihapus. Impor mendukung `.xlsx`, `.csv`, `.txt`, dan `.docx` sesuai jenis data. File `.xls` lama harus disimpan ulang sebagai `.xlsx` atau CSV menggunakan Excel/LibreOffice. Parser biner berjalan di proses terpisah dengan batas waktu 15 detik, heap 192 MB, dan maksimal dua parser aktif per proses server. Arsip dibatasi 30 MB setelah dekompresi. Gunakan `npm ci` untuk memasang versi dari lockfile; jangan menyalin `node_modules` versi lama.
 
 ## Perbaikan 11 Oktober 2026: gagal login Origin 403 & subject MySQL
 

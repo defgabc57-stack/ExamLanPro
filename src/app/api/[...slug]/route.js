@@ -2,7 +2,8 @@ import {NextResponse} from 'next/server';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
-import * as XLSX from 'xlsx';
+import {exportResultsXlsx} from '@/lib/spreadsheets.js';
+import {issueStudentAccess} from '@/lib/participants.js';
 import {Document,Packer,Paragraph,TextRun,HeadingLevel} from 'docx';
 import {requireTeacher,teacherSession,loginTeacher,logoutTeacher,changePassword} from '@/lib/auth.js';
 import {publicQuizzes,saveQuiz,changeReview} from '@/lib/quizzes.js';
@@ -18,13 +19,11 @@ async function body(req){return await req.json().catch(()=>({}));}
 function download(content,name,type){return new NextResponse(content,{headers:{'Content-Type':type,'Content-Disposition':`attachment; filename="${name}"`,'Cache-Control':'no-store'}});}
 function csv(data,headers){const escape=s=>'"'+String(s??'').replaceAll('"','""')+'"';return '\uFEFF'+[headers.map(escape).join(','),...data.map(r=>headers.map(k=>escape(r[k])).join(','))].join('\r\n')}
 async function dispatch(req,context){const route=(await context.params).slug.join('/');const method=req.method;const url=new URL(req.url);const args=Object.fromEntries(url.searchParams);
- const publicRoutes=['auth/guru/login','auth/guru/status','public/quizzes','public/student','ujian/check','ujian/mulai','ujian/sesi','ujian/answers','ujian/submit','ujian/review','ujian/extension/request','ujian/extension/status'];
  if(method==='POST'&&!isAllowedOrigin({origin:req.headers.get('origin'),host:req.headers.get('host'),requestUrl:req.url,appUrl:process.env.APP_URL}))throw Object.assign(new Error('Origin tidak diizinkan'),{status:403});
  if(route==='auth/guru/login'&&method==='POST')return response(await loginTeacher(await body(req),req));
  if(route==='auth/guru/status')return response({teacher:await teacherSession()});
  if(route==='public/quizzes')return response({quizzes:await publicQuizzes()});
- if(route==='public/student'){const nis=str(args.nis);assert(nis,'Masukkan NIS');const s=(await query('SELECT nis,name,class_name className FROM students WHERE nis=?',[nis]))[0];return response({student:s||null});}
- if(route==='ujian/check')return response(await checkEligibility(args));
+ if(route==='ujian/check'&&method==='POST')return response(await checkEligibility(await body(req)));
  if(route==='ujian/mulai'&&method==='POST')return response(await startAttempt(await body(req)));
  if(route==='ujian/sesi')return response(await resumeAttempt(str(args.token)));
  if(route==='ujian/answers'&&method==='POST'){const b=await body(req);return response(await saveAnswers(b.token,b));}
@@ -39,6 +38,7 @@ async function dispatch(req,context){const route=(await context.params).slug.joi
  if(route==='guru/data')return response(await teacherData());
  if(route==='guru/kuis'&&method==='POST')return response(await saveQuiz(await body(req),teacher));
  if(route==='guru/siswa'&&method==='POST')return response(await upsertStudent(await body(req),teacher));
+ if(route==='guru/siswa/access'&&method==='POST'){const b=await body(req);return response(await issueStudentAccess(b.id,teacher));}
  if(route==='guru/siswa/import'&&method==='POST'){const f=await req.formData(),report=await readImportFile(f.get('file'),'students');assert(report.ok,'Periksa file: '+JSON.stringify(report.errors));return response(await importStudents(report.valid,teacher));}
  if(route==='guru/hasil')return response({results:await listResults(args)});
  if(route==='guru/hasil/delete'&&method==='POST'){const b=await body(req);const ids=Array.isArray(b.ids)?b.ids:[b.id];for(const id of ids)await trashItem('results',id,teacher);return response({ok:true,count:ids.length})}
@@ -63,7 +63,7 @@ async function dispatch(req,context){const route=(await context.params).slug.joi
   const names={questions:'Template_Import_Soal_ExamLAN.xlsx',students:'Template_Import_Data_Siswa_ExamLAN.xlsx',word:'Template_Import_Soal_ExamLAN.docx'};const filename=names[args.kind];assert(filename,'Jenis template tidak ditemukan',404);const bytes=await fs.readFile(path.join(process.cwd(),'templates',filename));return download(bytes,filename,filename.endsWith('.docx')?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
  }
  if(route==='guru/results/csv'){const rows=await listResults(args);const headers=['id','nis','name','className','quiz','score','correct','wrong','submitted_at'];return download(csv(rows,headers),'hasil-examlan.csv','text/csv; charset=utf-8')}
- if(route==='guru/results/xlsx'){const rows=await listResults(args);const wb=XLSX.utils.book_new();const ws=XLSX.utils.json_to_sheet(rows.map(r=>({...r,submitted_at:String(r.submitted_at)})));XLSX.utils.book_append_sheet(wb,ws,'Hasil');return download(Buffer.from(XLSX.write(wb,{type:'buffer',bookType:'xlsx'})),'hasil-examlan.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');}
+ if(route==='guru/results/xlsx'){const rows=await listResults(args);return download(await exportResultsXlsx(rows),'hasil-examlan.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');}
  if(route==='guru/kuis/word'){const id=positiveInt(args.id);const record=(await query('SELECT title FROM quizzes WHERE id=?',[id]))[0];assert(record,'Kuis tidak ditemukan',404);const {getQuestions}=await import('@/lib/quizzes.js');const qs=await getQuestions(id);const children=[new Paragraph({text:record.title,heading:HeadingLevel.HEADING_1}),...qs.flatMap((q,i)=>{const lines=[`TIPE: ${q.type}`,`PERTANYAAN: ${q.question}`,`KASUS: ${q.passage}`,`PERNYATAAN: ${q.statement}`,`ALASAN: ${q.reason}`,...(q.options||[]).map((o,j)=>`${String.fromCharCode(65+j)}: ${o.text}`),`KUNCI: ${q.type==='complex'?q.answers.join(','):q.type==='scaled'?'':q.answer}`,`PEMBAHASAN: ${q.explanation}`,'---'];return lines.map(line=>new Paragraph({children:[new TextRun({text:line})]}));})];const doc=new Document({sections:[{children}]});const bytes=await Packer.toBuffer(doc);return download(bytes,`kuis-${id}.docx`,'application/vnd.openxmlformats-officedocument.wordprocessingml.document');}
  throw Object.assign(new Error('Endpoint tidak ditemukan'),{status:404});
 }

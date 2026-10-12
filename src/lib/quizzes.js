@@ -1,13 +1,13 @@
 import bcrypt from 'bcryptjs';
 import {query,transaction,run} from './db.js';
-import {j,assert,str,positiveInt,fmtDate} from './util.js';
+import {j,assert,str,positiveInt,scheduledDate} from './util.js';
 import {CAUSE_CODES} from './grading.js';
 export const TYPES=['mc','complex','cause_effect','case_analysis','scaled'];
 function allowedTime(q){const now=Date.now();return (!q.start_at||new Date(q.start_at).getTime()<=now)&&(!q.end_at||new Date(q.end_at).getTime()>=now)}
 export async function publicQuizzes(){const rows=await query(`SELECT id,title,description,subject,class_name,duration_minutes,status,start_at,end_at,pin_enabled FROM quizzes WHERE status='ACTIVE' ORDER BY id DESC`);return rows.filter(allowedTime).map(q=>({...q,pin_enabled:!!q.pin_enabled}));}
 export async function getQuestions(quizId,conn=null){const exec=conn?(sql,p)=>run(conn,sql,p):query;const rows=await exec(`SELECT q.*,m.file_path AS image FROM questions q LEFT JOIN media_assets m ON m.id=q.image_asset_id WHERE q.quiz_id=? ORDER BY q.display_order`,[quizId]);if(!rows.length)return [];
  const options=await exec(`SELECT qo.* FROM question_options qo JOIN questions q ON q.id=qo.question_id WHERE q.quiz_id=? ORDER BY qo.question_id,qo.display_order`,[quizId]);const group=new Map();options.forEach(x=>group.set(String(x.question_id),[...(group.get(String(x.question_id))||[]),x]));
- return rows.map(q=>{const arr=group.get(String(q.id))||[];const decoded=j(q.answer_code);return {id:q.id,type:q.type,question:q.question_text||'',statement:q.statement||'',reason:q.reason||'',passage:q.passage||'',explanation:q.explanation||'',image:q.image||'',options:arr.map(o=>({text:o.text_value,score:Number(o.score_value)||0})),answer:q.type==='cause_effect'?q.answer_code:(q.type==='complex'?null:Number(q.answer_code??arr.findIndex(o=>o.is_correct))),answers:q.type==='complex'?(Array.isArray(decoded)?decoded:arr.map((o,i)=>o.is_correct?i:-1).filter(x=>x>=0)):undefined};});
+ return rows.map(q=>{const arr=group.get(String(q.id))||[];const decoded=j(q.answer_code);return {id:q.id,displayOrder:q.display_order,type:q.type,question:q.question_text||'',statement:q.statement||'',reason:q.reason||'',passage:q.passage||'',explanation:q.explanation||'',image:q.image||'',options:arr.map(o=>({text:o.text_value,score:Number(o.score_value)||0})),answer:q.type==='cause_effect'?q.answer_code:(q.type==='complex'?null:Number(q.answer_code??arr.findIndex(o=>o.is_correct))),answers:q.type==='complex'?(Array.isArray(decoded)?decoded:arr.map((o,i)=>o.is_correct?i:-1).filter(x=>x>=0)):undefined};});
 }
 export async function teacherQuizzes(){const rows=await query('SELECT * FROM quizzes ORDER BY updated_at DESC');return Promise.all(rows.map(async q=>({...q,questions:await getQuestions(q.id),pin_hash:undefined})));}
 export function validateQuestion(q,idx){assert(TYPES.includes(q.type),`Soal ${idx+1}: tipe tidak sah`);if(q.type==='cause_effect'){assert(str(q.statement)&&str(q.reason),`Soal ${idx+1}: pernyataan dan alasan wajib`);assert(CAUSE_CODES.includes(q.answer),`Soal ${idx+1}: kunci sebab-akibat tidak sah`);return;}
@@ -24,7 +24,9 @@ export async function saveQuiz(body,teacher){const questions=body.questions||[];
   let pinHash=existing?.pin_hash||null;let pinEnabled=body.pin_enabled?1:0;
   if(body.pin!==undefined&&str(body.pin))pinHash=await bcrypt.hash(String(body.pin),10);
   if(!pinEnabled)pinHash=null;
-  const values=[str(body.title),str(body.description),str(body.subject),str(body.class_name),duration,body.status,fmtDate(body.start_at),fmtDate(body.end_at),pinHash,pinEnabled,body.review_enabled?1:0];
+  assert(!pinEnabled||pinHash,'Isi PIN sebelum mengaktifkan PIN kuis');
+  assert(!body.start_at||!body.end_at||new Date(body.end_at)>new Date(body.start_at),'Jadwal selesai harus setelah mulai');
+  const values=[str(body.title),str(body.description),str(body.subject),str(body.class_name),duration,body.status,scheduledDate(body.start_at),scheduledDate(body.end_at),pinHash,pinEnabled,body.review_enabled?1:0];
   if(id)await run(conn,`UPDATE quizzes SET title=?,description=?,subject=?,class_name=?,duration_minutes=?,status=?,start_at=?,end_at=?,pin_hash=?,pin_enabled=?,review_enabled=? WHERE id=?`,[...values,id]);
   else{const r=await run(conn,`INSERT INTO quizzes(title,description,subject,class_name,duration_minutes,status,start_at,end_at,pin_hash,pin_enabled,review_enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,values);id=r.insertId;}
   // Deleting questions leaves existing attempt snapshots intact (question_id set null).

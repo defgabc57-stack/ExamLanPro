@@ -3,7 +3,7 @@ export const CAUSE_CODES=['both_correct_connected','both_correct_not_connected',
 export function gradeOne(question, answer){
  const opts=question.options||[];const type=question.type||'mc';
  if(type==='scaled'){
-  const a=Number(answer);const max=Math.max(0,...opts.map(x=>Number(x.score)||0));const earned=Number.isInteger(a)&&opts[a]?Math.max(0,Number(opts[a].score)||0):0;
+  const a=answer===null||answer===undefined||answer===''||typeof answer!=='number'?-1:answer;const max=Math.max(0,...opts.map(x=>Number(x.score)||0));const earned=Number.isInteger(a)&&opts[a]?Math.max(0,Number(opts[a].score)||0):0;
   return {correct:earned>=max/2&&max>0,earned,max};
  }
  if(type==='complex'){
@@ -30,5 +30,5 @@ export function normalizeAnswer(question,answer,order){
  if(question.type==='cause_effect')return String(answer??'');
  if(question.type==='complex')return Array.isArray(answer)?[...new Set(answer)].filter(n=>Number.isInteger(n)&&n>=0&&n<order.length).map(i=>order[i]):[];
  if(answer===null||answer===undefined||answer==='')return null;
- const n=Number(answer);return Number.isInteger(n)&&n>=0&&n<order.length?order[n]:null;
+ const n=typeof answer==='number'?answer:NaN;return Number.isInteger(n)&&n>=0&&n<order.length?order[n]:null;
 }
